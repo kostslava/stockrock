@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stockrock"
+version = "0.1.0"
+description = "Automated trading assistant for the InvestJA workflow"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "yfinance",
+    "pandas",
+    "numpy",
+    "python-dotenv",
+    "requests",
+    "rich>=13.0",
+    "beautifulsoup4",
+    "playwright",
+]
+
+[project.scripts]
+stockrock = "stockrock.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

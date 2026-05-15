@@ -1,0 +1,8 @@
+yfinance
+pandas
+numpy
+python-dotenv
+requests
+rich>=13.0
+beautifulsoup4
+playwright
