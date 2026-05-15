@@ -1,141 +1,196 @@
 # StockRock
 
-StockRock is an automated trading assistant for the InvestJA competition workflow.
+**Automated trading for [InvestJA.org](https://investja.org)** — forecast with **TimesFM**, execute through the platform’s web UI, and ping **Telegram** when trades happen.
 
-It is designed to:
+There’s also **`--spam` mode**, which does the opposite on purpose: burn fees and lose money as fast as the rules allow (the “lose the most” sub-contest).
 
-- Pull live market data from Yahoo Finance
-- Forecast short-term direction (TimesFM when available, fallback model otherwise)
-- Trade fee-aware opportunities from a configurable stock universe
-- Apply a configurable risk dial to position sizing
-- Send Telegram alerts for all buy/sell actions
+---
 
-## Important Notes
+## What it does
 
-- This project is educational software and not financial advice.
-- InvestJA mode now uses authenticated web requests to scrape account data and submit buy/sell forms.
-- TimesFM support is optional; if unavailable, StockRock falls back to a momentum baseline model.
+| Mode | Goal | How |
+|------|------|-----|
+| **Normal** | Trade fee-aware opportunities | Yahoo data → TimesFM (or momentum fallback) → buy/sell via InvestJA or paper broker → Telegram alerts |
+| **`--spam`** | Maximize fees / minimize equity | Cheapest-first 1-share loops, up to 3 txns/symbol/day, live Rich dashboard |
 
-## Quick Start
+```mermaid
+flowchart LR
+  subgraph normal["Normal mode"]
+    YF[Yahoo Finance] --> TF[TimesFM forecast]
+    TF --> ST[Strategy + risk dial]
+    ST --> BR[Broker]
+    BR --> TG[Telegram]
+  end
+  subgraph spam["--spam mode"]
+    CSV[stocks.csv / universe] --> SP[Spam engine]
+    SP --> PW[Playwright → InvestJA]
+    PW --> TG2[Telegram optional]
+  end
+```
 
-1. Create a Python 3.11 virtual environment and install dependencies:
+---
+
+## Requirements
+
+- **Python 3.11+**
+- **Chromium** (Playwright) for live InvestJA trading
+- Optional: **TimesFM** + **PyTorch** for the default forecaster
+- Optional: **OpenAI** for trade summaries / “explain why” in approval flow
+
+---
+
+## Quick start
 
 ```bash
+git clone https://github.com/YOUR_USERNAME/stockrock.git
+cd stockrock
+
 python3.11 -m venv .venv311
 source .venv311/bin/activate
+
 pip install -r requirements.txt
-pip install -e .   # installs the `stockrock` CLI into this venv (same as `python -m stockrock.main`)
+pip install -e .
 pip install torch
 pip install "git+https://github.com/google-research/timesfm.git"
 playwright install chromium
 ```
 
-After `pip install -e .`, you can run the bot as `stockrock` instead of `python -m stockrock.main` (same flags: `--once`, `--plain`, `--spam`, etc.).
-
-2. Copy env template:
+Copy config and add your secrets (never commit `.env`):
 
 ```bash
 cp .env.example .env
 ```
 
-3. Fill required fields in `.env`.
+Set at minimum for live trading:
 
-Telegram setup:
+- `BROKER_MODE=investja`
+- `INVESTJA_USERNAME` / `INVESTJA_PASSWORD`
+- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` (recommended)
+
+Discover Telegram `chat_id`:
 
 ```bash
 python -m stockrock.telegram_setup
 ```
 
-Then message your bot in Telegram (for example, send `/start`) and run the command again to discover your `chat_id`. Put that value in `TELEGRAM_CHAT_ID`.
+Message your bot (`/start`), run the command again, then paste the id into `.env`.
 
-4. Run one cycle (Rich terminal dashboard by default):
+---
+
+## Running
+
+### Normal trading (forecast → trade → notify)
+
+One cycle with the live terminal dashboard:
 
 ```bash
 stockrock --once
-# equivalent: python -m stockrock.main --once
 ```
 
-5. Run continuously (default 15-minute interval; live-refreshed dashboard):
+Run forever (interval from `POLL_SECONDS` in `.env`):
 
 ```bash
 stockrock
 ```
 
-6. Plain logs only (no dashboard):
+Plain logs, no Rich UI:
 
 ```bash
 stockrock --plain
 ```
 
-7. Goon (spam) mode — drains account balance via maximum-fee trades for the
-   InvestJA "lose-the-most" sub-contest. Bypasses forecaster, advisor, and
-   Telegram approval. Does **not** affect the normal trading flow above.
+### Spam / “goon” mode (lose the most)
 
 ```bash
-stockrock --spam            # loops, sleeping POLL_SECONDS between passes
-stockrock --spam --once     # single pass through the universe
+stockrock --spam
 ```
 
-Behavior:
+| Flag | Description |
+|------|-------------|
+| `--spam-mode buy` | Only buy flat names from the universe |
+| `--spam-mode sell` | Only sell current holdings |
+| `--spam-mode combo` | Alternate buy and sell (default) |
+| `--spam --once` | Single pass, then exit |
+| `--spam --plain` | No dashboard |
+| `--spam-workers N` | Experimental parallel workers (often not worth it on one account) |
 
-- For each tradable ticker, executes 3 transactions per day (the platform cap),
-  ending as close to flat as possible: SELL/BUY/SELL if currently long, else
-  BUY/SELL/BUY (ends +1 share, cleared next day).
-- Tickers are processed cheapest-first so 1-share lots remain affordable as cash
-  drains.
-- Daily transaction counts per ticker are persisted to `~/.stockrock/spam_state.json`
-  so reruns the same day respect the 3-txn cap.
-- Uses the same `STOCK_UNIVERSE` env var as normal mode; expand it to drain
-  faster (more tickers × $75/day = more fees burned).
+In the Rich dashboard, **← / →** or **↑ / ↓** cycle `buy` / `sell` / `combo` without restarting.
 
-## Config
+Spam mode:
 
-Key environment variables:
+- Ignores TimesFM, advisor, and Telegram approval
+- Uses **`stocks.csv`** (or `STOCK_UNIVERSE` / `STOCK_UNIVERSE_CSV` in `.env`)
+- Persists per-ticker daily counts in `~/.stockrock/spam_state.json`
+- Respects InvestJA rules (e.g. ~$2 CAD floor, 1h hold after buy before sell)
 
-- `RISK_DIAL`: float from `0.0` to `1.0`, controls portfolio fraction per trade.
-- `TRADE_FEE`: fixed fee per trade in dollars (defaults to `25.0`).
-- `BASE_CURRENCY`: reporting currency label.
-- `OIL_PROXY_SYMBOL`: market proxy for oil direction (`CL=F` by default).
-- `STOCK_UNIVERSE`: comma-separated list in `TICKER|YAHOO_SYMBOL|EXCHANGE` format.
-  - Exchange must be one of `NASDAQ`, `NYSE`, `TSX`.
-- `MIN_EXPECTED_PROFIT_MULTIPLE`: expected-profit-to-fee minimum, used to avoid weak trades.
-- `OPENAI_API_KEY`, `OPENAI_MODEL`: AI summary/explain model for approvals.
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: Telegram alert credentials.
+---
+
+## Universe (`stocks.csv`)
+
+Build a large tradable list from Yahoo screeners:
+
+```bash
+python screener.py
+```
+
+Writes **`stocks.csv`** (NYSE / NASDAQ / TSX, ~$3–$20 CAD). The bot loads it via `STOCK_UNIVERSE_CSV` (default: `stocks.csv`).
+
+---
+
+## Configuration
+
+See **`.env.example`** for all variables. Highlights:
+
+| Variable | Purpose |
+|----------|---------|
+| `MODEL_PROVIDER` | `timesfm` (default) or fallback behavior |
+| `BROKER_MODE` | `paper` or `investja` |
+| `STOCK_UNIVERSE` | Inline `TICKER\|YAHOO\|EXCHANGE` list |
+| `STOCK_UNIVERSE_CSV` | Path to CSV (default `stocks.csv`) |
+| `TRADE_FEE` | Fee per trade (default `25`) |
+| `RISK_DIAL` | Position sizing aggressiveness `0.0`–`1.0` |
+| `INVESTJA_LOAN_CAP` | Max margin for spam buys when cash is low |
+| `POLL_SECONDS` | Sleep between normal cycles / spam passes |
+
+---
 
 ## TimesFM
 
-StockRock tries to use TimesFM if `MODEL_PROVIDER=timesfm` and the package is installed.
-If TimesFM import or inference fails, it logs a warning and gracefully falls back to momentum forecasting.
-The tested path here is Python 3.11 with `torch` and latest TimesFM from GitHub.
+With `MODEL_PROVIDER=timesfm` and TimesFM installed, StockRock uses Google’s model for short-horizon forecasts. If import or inference fails, it **falls back to momentum** and keeps running.
 
-## Telegram Approval Flow
+Tested path: **Python 3.11**, `torch`, TimesFM from GitHub (see install steps above).
 
-Before executing a buy trade, the bot sends:
+---
 
-- AI summary (GPT-5 nano)
-- Buttons: `Yes`, `No`, `Explain why`
+## Telegram
 
-`Explain why` sends detailed technical metrics and forecast context. If approval times out, trade is cancelled.
+On buys (and sells), the bot can notify your chat. Optional approval flow:
 
-## InvestJA Browser Execution
+- **Yes** / **No** / **Explain why** buttons
+- AI summary when `OPENAI_API_KEY` is set
+- Configurable timeout via `TELEGRAM_APPROVAL_TIMEOUT_SEC`
 
-In `BROKER_MODE=investja`, orders are executed in a real browser flow:
+---
 
-1. Log in with team username/password
-2. Open `/private/game?tab=purchase|sell&exchange=...&ticker=...&quantity=...`
-3. Select exchange from dropdown
-4. Fill ticker and quantity
-5. Click `Purchase` or `Sell`
-6. Click final confirmation (`Yes, attempt this ... now`)
+## Project layout
 
-## Project Structure
+```
+stockrock/
+  main.py        CLI entry (stockrock)
+  engine.py      Normal trading loop
+  spam.py        --spam fee-burn engine
+  investja.py    Playwright login + orders
+  broker.py      Paper + InvestJA execution
+  data.py        Yahoo Finance
+  strategy.py    Signals + risk
+  ui.py          Normal Rich dashboard
+  ui_spam.py     Spam Rich dashboard
+screener.py      Build stocks.csv
+stocks.csv       Tradable universe (generated)
+```
 
-- `stockrock/config.py`: environment and runtime settings
-- `stockrock/data.py`: Yahoo Finance market data adapter
-- `stockrock/model.py`: forecast providers (TimesFM + fallback)
-- `stockrock/strategy.py`: oil rotation strategy logic
-- `stockrock/portfolio.py`: fee-aware paper portfolio state
-- `stockrock/broker.py`: execution adapter (paper broker + InvestJA stub)
-- `stockrock/notifier.py`: Telegram notifications
-- `stockrock/engine.py`: orchestration loop
-- `stockrock/main.py`: CLI entrypoint
+---
+
+## Disclaimer
+
+Educational software — **not financial advice**. Live trading on InvestJA uses real credentials and real money. You are responsible for compliance with platform rules and your own risk.
